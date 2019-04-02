@@ -70,7 +70,7 @@ index 1827aec63..d7c4fa1d0 100644
 +    // { "hidden",             "syncwithvalidationinterfacequeue", &syncwithvalidationinterfacequeue, {} },
  };
  // clang-format on
-
+ 
 diff --git a/src/rpc/client.cpp b/src/rpc/client.cpp
 index a266580b3..e2a60f86d 100644
 --- a/src/rpc/client.cpp
@@ -351,7 +351,7 @@ index a266580b3..e2a60f86d 100644
 +    // { "stop", 0, "wait" },
  };
  // clang-format on
-
+ 
 diff --git a/src/rpc/net.cpp b/src/rpc/net.cpp
 index c7b3478f4..93fc47645 100644
 --- a/src/rpc/net.cpp
@@ -388,7 +388,7 @@ index c7b3478f4..93fc47645 100644
 +    // { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count"} },
  };
  // clang-format on
-
+ 
 diff --git a/src/rpc/rawtransaction.cpp b/src/rpc/rawtransaction.cpp
 index d19afaa8a..45cdc1118 100644
 --- a/src/rpc/rawtransaction.cpp
@@ -436,3 +436,4 @@ index d19afaa8a..45cdc1118 100644
 +    // { "blockchain",         "verifytxoutproof",             &verifytxoutproof,          {"proof"} },
  };
  // clang-format on
+ 

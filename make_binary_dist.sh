@@ -13,7 +13,7 @@ fi
 mkdir -p ${DIR}/bin
 mkdir -p ${DIR}/include
 mkdir -p ${DIR}/share/man/man1
-strip src/bitcoind
+strip src/bitcoind 
 strip src/bitcoin-cli
 strip src/bitcoin-tx
 cp -a src/bitcoind ${DIR}/bin/
