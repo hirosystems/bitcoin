@@ -6,4 +6,4 @@ else
   BRANCH="master"
 fi
 
-echo "git pull $UPSTREAM $BRANCH"
+git pull $UPSTREAM $BRANCH
