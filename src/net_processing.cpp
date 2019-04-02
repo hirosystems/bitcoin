@@ -1713,6 +1713,67 @@ bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, const std::ve
     return true;
 }
 
+void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_set, std::list<CTransactionRef>& removed_txn) EXCLUSIVE_LOCKS_REQUIRED(cs_main, g_cs_orphans)
+{
+    AssertLockHeld(cs_main);
+    AssertLockHeld(g_cs_orphans);
+    std::set<NodeId> setMisbehaving;
+    bool done = false;
+    while (!done && !orphan_work_set.empty()) {
+        const uint256 orphanHash = *orphan_work_set.begin();
+        orphan_work_set.erase(orphan_work_set.begin());
+
+        auto orphan_it = mapOrphanTransactions.find(orphanHash);
+        if (orphan_it == mapOrphanTransactions.end()) continue;
+
+        const CTransactionRef porphanTx = orphan_it->second.tx;
+        const CTransaction& orphanTx = *porphanTx;
+        NodeId fromPeer = orphan_it->second.fromPeer;
+        bool fMissingInputs2 = false;
+        // Use a dummy CValidationState so someone can't setup nodes to counter-DoS based on orphan
+        // resolution (that is, feeding people an invalid transaction based on LegitTxX in order to get
+        // anyone relaying LegitTxX banned)
+        CValidationState stateDummy;
+
+        if (setMisbehaving.count(fromPeer)) continue;
+        if (AcceptToMemoryPool(mempool, stateDummy, porphanTx, &fMissingInputs2, &removed_txn, false /* bypass_limits */, 0 /* nAbsurdFee */)) {
+            LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
+            RelayTransaction(orphanTx, connman);
+            for (unsigned int i = 0; i < orphanTx.vout.size(); i++) {
+                auto it_by_prev = mapOrphanTransactionsByPrev.find(COutPoint(orphanHash, i));
+                if (it_by_prev != mapOrphanTransactionsByPrev.end()) {
+                    for (const auto& elem : it_by_prev->second) {
+                        orphan_work_set.insert(elem->first);
+                    }
+                }
+            }
+            EraseOrphanTx(orphanHash);
+            done = true;
+        } else if (!fMissingInputs2) {
+            int nDos = 0;
+            if (stateDummy.IsInvalid(nDos) && nDos > 0) {
+                // Punish peer that gave us an invalid orphan tx
+                Misbehaving(fromPeer, nDos);
+                setMisbehaving.insert(fromPeer);
+                LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s\n", orphanHash.ToString());
+            }
+            // Has inputs but not accepted to mempool
+            // Probably non-standard or insufficient fee
+            LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
+            if (!orphanTx.HasWitness() && !stateDummy.CorruptionPossible()) {
+                // Do not use rejection cache for witness transactions or
+                // witness-stripped transactions, as they can have been malleated.
+                // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
+                assert(recentRejects);
+                recentRejects->insert(orphanHash);
+            }
+            EraseOrphanTx(orphanHash);
+            done = true;
+        }
+        mempool.check(pcoinsTip.get());
+    }
+}
+
 bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman* connman, const std::atomic<bool>& interruptMsgProc, bool enable_bip61)
 {
     LogPrint(BCLog::NET, "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->GetId());
@@ -2022,6 +2083,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (addr.nTime <= 100000000 || addr.nTime > nNow + 10 * 60)
                 addr.nTime = nNow - 5 * 24 * 60 * 60;
             pfrom->AddAddressKnown(addr);
+            if (g_banman->IsBanned(addr)) continue; // Do not process banned addresses beyond remembering we received them
             bool fReachable = IsReachable(addr);
             if (addr.nTime > nSince && !pfrom->fGetAddr && vAddr.size() <= 10 && addr.IsRoutable())
             {
@@ -2341,8 +2403,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return true;
         }
 
-        std::deque<COutPoint> vWorkQueue;
-        std::vector<uint256> vEraseQueue;
         CTransactionRef ptx;
         vRecv >> ptx;
         const CTransaction& tx = *ptx;
@@ -2367,7 +2427,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             mempool.check(pcoinsTip.get());
             RelayTransaction(tx, connman);
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
-                vWorkQueue.emplace_back(inv.hash, i);
+                auto it_by_prev = mapOrphanTransactionsByPrev.find(COutPoint(inv.hash, i));
+                if (it_by_prev != mapOrphanTransactionsByPrev.end()) {
+                    for (const auto& elem : it_by_prev->second) {
+                        pfrom->orphan_work_set.insert(elem->first);
+                    }
+                }
             }
 
             pfrom->nLastTXTime = GetTime();
@@ -2378,65 +2443,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 mempool.size(), mempool.DynamicMemoryUsage() / 1000);
 
             // Recursively process any orphan transactions that depended on this one
-            std::set<NodeId> setMisbehaving;
-            while (!vWorkQueue.empty()) {
-                auto itByPrev = mapOrphanTransactionsByPrev.find(vWorkQueue.front());
-                vWorkQueue.pop_front();
-                if (itByPrev == mapOrphanTransactionsByPrev.end())
-                    continue;
-                for (auto mi = itByPrev->second.begin();
-                     mi != itByPrev->second.end();
-                     ++mi)
-                {
-                    const CTransactionRef& porphanTx = (*mi)->second.tx;
-                    const CTransaction& orphanTx = *porphanTx;
-                    const uint256& orphanHash = orphanTx.GetHash();
-                    NodeId fromPeer = (*mi)->second.fromPeer;
-                    bool fMissingInputs2 = false;
-                    // Use a dummy CValidationState so someone can't setup nodes to counter-DoS based on orphan
-                    // resolution (that is, feeding people an invalid transaction based on LegitTxX in order to get
-                    // anyone relaying LegitTxX banned)
-                    CValidationState stateDummy;
-
-
-                    if (setMisbehaving.count(fromPeer))
-                        continue;
-                    if (AcceptToMemoryPool(mempool, stateDummy, porphanTx, &fMissingInputs2, &lRemovedTxn, false /* bypass_limits */, 0 /* nAbsurdFee */)) {
-                        LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
-                        RelayTransaction(orphanTx, connman);
-                        for (unsigned int i = 0; i < orphanTx.vout.size(); i++) {
-                            vWorkQueue.emplace_back(orphanHash, i);
-                        }
-                        vEraseQueue.push_back(orphanHash);
-                    }
-                    else if (!fMissingInputs2)
-                    {
-                        int nDos = 0;
-                        if (stateDummy.IsInvalid(nDos) && nDos > 0)
-                        {
-                            // Punish peer that gave us an invalid orphan tx
-                            Misbehaving(fromPeer, nDos);
-                            setMisbehaving.insert(fromPeer);
-                            LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s\n", orphanHash.ToString());
-                        }
-                        // Has inputs but not accepted to mempool
-                        // Probably non-standard or insufficient fee
-                        LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
-                        vEraseQueue.push_back(orphanHash);
-                        if (!orphanTx.HasWitness() && !stateDummy.CorruptionPossible()) {
-                            // Do not use rejection cache for witness transactions or
-                            // witness-stripped transactions, as they can have been malleated.
-                            // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
-                            assert(recentRejects);
-                            recentRejects->insert(orphanHash);
-                        }
-                    }
-                    mempool.check(pcoinsTip.get());
-                }
-            }
-
-            for (const uint256& hash : vEraseQueue)
-                EraseOrphanTx(hash);
+            ProcessOrphanTx(connman, pfrom->orphan_work_set, lRemovedTxn);
         }
         else if (fMissingInputs)
         {
@@ -2540,8 +2547,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return true;
     }
 
-    if (strCommand == NetMsgType::CMPCTBLOCK && !fImporting && !fReindex) // Ignore blocks received while importing
+    if (strCommand == NetMsgType::CMPCTBLOCK)
     {
+        // Ignore cmpctblock received while importing
+        if (fImporting || fReindex) {
+            LogPrint(BCLog::NET, "Unexpected cmpctblock message received from peer %d\n", pfrom->GetId());
+            return true;
+        }
+
         CBlockHeaderAndShortTxIDs cmpctblock;
         vRecv >> cmpctblock;
 
@@ -2761,8 +2774,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return true;
     }
 
-    if (strCommand == NetMsgType::BLOCKTXN && !fImporting && !fReindex) // Ignore blocks received while importing
+    if (strCommand == NetMsgType::BLOCKTXN)
     {
+        // Ignore blocktxn received while importing
+        if (fImporting || fReindex) {
+            LogPrint(BCLog::NET, "Unexpected blocktxn message received from peer %d\n", pfrom->GetId());
+            return true;
+        }
+
         BlockTransactions resp;
         vRecv >> resp;
 
@@ -2836,8 +2855,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return true;
     }
 
-    if (strCommand == NetMsgType::HEADERS && !fImporting && !fReindex) // Ignore headers received while importing
+    if (strCommand == NetMsgType::HEADERS)
     {
+        // Ignore headers received while importing
+        if (fImporting || fReindex) {
+            LogPrint(BCLog::NET, "Unexpected headers message received from peer %d\n", pfrom->GetId());
+            return true;
+        }
+
         std::vector<CBlockHeader> headers;
 
         // Bypass the normal CBlock deserialization, as we don't want to risk deserializing 2000 full blocks.
@@ -2861,8 +2886,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return ProcessHeadersMessage(pfrom, connman, headers, chainparams, should_punish);
     }
 
-    if (strCommand == NetMsgType::BLOCK && !fImporting && !fReindex) // Ignore blocks received while importing
+    if (strCommand == NetMsgType::BLOCK)
     {
+        // Ignore block received while importing
+        if (fImporting || fReindex) {
+            LogPrint(BCLog::NET, "Unexpected block message received from peer %d\n", pfrom->GetId());
+            return true;
+        }
+
         std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
         vRecv >> *pblock;
 
@@ -2912,8 +2943,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         pfrom->vAddrToSend.clear();
         std::vector<CAddress> vAddr = connman->GetAddresses();
         FastRandomContext insecure_rand;
-        for (const CAddress &addr : vAddr)
-            pfrom->PushAddress(addr, insecure_rand);
+        for (const CAddress &addr : vAddr) {
+            if (!g_banman->IsBanned(addr)) {
+                pfrom->PushAddress(addr, insecure_rand);
+            }
+        }
         return true;
     }
 
@@ -3141,11 +3175,21 @@ bool PeerLogicValidation::ProcessMessages(CNode* pfrom, std::atomic<bool>& inter
     if (!pfrom->vRecvGetData.empty())
         ProcessGetData(pfrom, chainparams, connman, interruptMsgProc);
 
+    if (!pfrom->orphan_work_set.empty()) {
+        std::list<CTransactionRef> removed_txn;
+        LOCK2(cs_main, g_cs_orphans);
+        ProcessOrphanTx(connman, pfrom->orphan_work_set, removed_txn);
+        for (const CTransactionRef& removedTx : removed_txn) {
+            AddToCompactExtraTransactions(removedTx);
+        }
+    }
+
     if (pfrom->fDisconnect)
         return false;
 
     // this maintains the order of responses
     if (!pfrom->vRecvGetData.empty()) return true;
+    if (!pfrom->orphan_work_set.empty()) return true;
 
     // Don't bother if send buffer is too full to respond anyway
     if (pfrom->fPauseSend)

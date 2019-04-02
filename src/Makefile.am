@@ -154,6 +154,7 @@ BITCOIN_CORE_H = \
   netaddress.h \
   netbase.h \
   netmessagemaker.h \
+  node/coin.h \
   node/transaction.h \
   noui.h \
   optional.h \
@@ -262,6 +263,7 @@ libbitcoin_server_a_SOURCES = \
   miner.cpp \
   net.cpp \
   net_processing.cpp \
+  node/coin.cpp \
   node/transaction.cpp \
   noui.cpp \
   outputtype.cpp \
@@ -344,6 +346,8 @@ crypto_libbitcoin_crypto_base_a_SOURCES = \
   crypto/hmac_sha256.h \
   crypto/hmac_sha512.cpp \
   crypto/hmac_sha512.h \
+  crypto/poly1305.h \
+  crypto/poly1305.cpp \
   crypto/ripemd160.cpp \
   crypto/ripemd160.h \
   crypto/sha1.cpp \
@@ -493,6 +497,8 @@ if TARGET_WINDOWS
 bitcoind_SOURCES += bitcoind-res.rc
 endif
 
+# Libraries below may be listed more than once to resolve circular dependencies (see
+# https://eli.thegreenplace.net/2013/07/09/library-order-in-static-linking#circular-dependency)
 bitcoind_LDADD = \
   $(LIBBITCOIN_SERVER) \
   $(LIBBITCOIN_WALLET) \
@@ -642,13 +648,13 @@ clean-local:
 check-symbols: $(bin_PROGRAMS)
 if GLIBC_BACK_COMPAT
 	@echo "Checking glibc back compat..."
-	$(AM_V_at) READELF=$(READELF) CPPFILT=$(CPPFILT) $(top_srcdir)/contrib/devtools/symbol-check.py < $(bin_PROGRAMS)
+	$(AM_V_at) READELF=$(READELF) CPPFILT=$(CPPFILT) $(PYTHON) $(top_srcdir)/contrib/devtools/symbol-check.py < $(bin_PROGRAMS)
 endif
 
 check-security: $(bin_PROGRAMS)
 if HARDEN
 	@echo "Checking binary security..."
-	$(AM_V_at) READELF=$(READELF) OBJDUMP=$(OBJDUMP) $(top_srcdir)/contrib/devtools/security-check.py < $(bin_PROGRAMS)
+	$(AM_V_at) READELF=$(READELF) OBJDUMP=$(OBJDUMP) $(PYTHON) $(top_srcdir)/contrib/devtools/security-check.py < $(bin_PROGRAMS)
 endif
 
 if ENABLE_BIP70

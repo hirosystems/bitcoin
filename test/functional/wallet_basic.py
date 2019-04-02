@@ -14,7 +14,6 @@ from test_framework.util import (
     assert_raises_rpc_error,
     connect_nodes_bi,
     sync_blocks,
-    sync_mempools,
     wait_until,
 )
 
@@ -168,8 +167,8 @@ class WalletTest(BitcoinTestFramework):
             txns_to_send.append(self.nodes[0].signrawtransactionwithwallet(raw_tx))
 
         # Have node 1 (miner) send the transactions
-        self.nodes[1].sendrawtransaction(txns_to_send[0]["hex"], True)
-        self.nodes[1].sendrawtransaction(txns_to_send[1]["hex"], True)
+        self.nodes[1].sendrawtransaction(txns_to_send[0]["hex"], 0)
+        self.nodes[1].sendrawtransaction(txns_to_send[1]["hex"], 0)
 
         # Have node1 mine a block to confirm transactions:
         self.nodes[1].generate(1)
@@ -216,23 +215,9 @@ class WalletTest(BitcoinTestFramework):
         assert_equal(self.nodes[2].getbalance(), node_2_bal)
         node_0_bal = self.check_fee_amount(self.nodes[0].getbalance(), node_0_bal + Decimal('10'), fee_per_byte, self.get_vsize(self.nodes[2].gettransaction(txid)['hex']))
 
-        # Test ResendWalletTransactions:
-        # Create a couple of transactions, then start up a fourth
-        # node (nodes[3]) and ask nodes[0] to rebroadcast.
-        # EXPECT: nodes[3] should have those transactions in its mempool.
-        txid1 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 1)
-        txid2 = self.nodes[1].sendtoaddress(self.nodes[0].getnewaddress(), 1)
-        sync_mempools(self.nodes[0:2])
-
         self.start_node(3)
         connect_nodes_bi(self.nodes, 0, 3)
-        sync_blocks(self.nodes)
-
-        relayed = self.nodes[0].resendwallettransactions()
-        assert_equal(set(relayed), {txid1, txid2})
-        sync_mempools(self.nodes)
-
-        assert txid1 in self.nodes[3].getrawmempool()
+        self.sync_all()
 
         # check if we can list zero value tx as available coins
         # 1. create raw_tx

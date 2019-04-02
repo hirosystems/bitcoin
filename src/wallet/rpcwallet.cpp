@@ -2367,8 +2367,8 @@ static UniValue settxfee(const JSONRPCRequest& request)
     CFeeRate tx_fee_rate(nAmount, 1000);
     if (tx_fee_rate == 0) {
         // automatic selection
-    } else if (tx_fee_rate < ::minRelayTxFee) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("txfee cannot be less than min relay tx fee (%s)", ::minRelayTxFee.ToString()));
+    } else if (tx_fee_rate < pwallet->chain().relayMinFee()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("txfee cannot be less than min relay tx fee (%s)", pwallet->chain().relayMinFee().ToString()));
     } else if (tx_fee_rate < pwallet->m_min_fee) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("txfee cannot be less than wallet min fee (%s)", pwallet->m_min_fee.ToString()));
     }
@@ -2666,50 +2666,6 @@ static UniValue unloadwallet(const JSONRPCRequest& request)
     UnloadWallet(std::move(wallet));
 
     return NullUniValue;
-}
-
-static UniValue resendwallettransactions(const JSONRPCRequest& request)
-{
-    std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
-    CWallet* const pwallet = wallet.get();
-
-    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
-        return NullUniValue;
-    }
-
-    if (request.fHelp || request.params.size() != 0)
-        throw std::runtime_error(
-            RPCHelpMan{"resendwallettransactions",
-                "Immediately re-broadcast unconfirmed wallet transactions to all peers.\n"
-                "Intended only for testing; the wallet code periodically re-broadcasts\n"
-                "automatically.\n",
-                {},
-                RPCResult{
-            "Returns an RPC error if -walletbroadcast is set to false.\n"
-            "Returns array of transaction ids that were re-broadcast.\n"
-                },
-                 RPCExamples{""},
-             }.ToString()
-            );
-
-    if (!pwallet->chain().p2pEnabled()) {
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
-    }
-
-    auto locked_chain = pwallet->chain().lock();
-    LOCK(pwallet->cs_wallet);
-
-    if (!pwallet->GetBroadcastTransactions()) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Wallet transaction broadcasting is disabled with -walletbroadcast");
-    }
-
-    std::vector<uint256> txids = pwallet->ResendWalletTransactionsBefore(*locked_chain, GetTime());
-    UniValue result(UniValue::VARR);
-    for (const uint256& txid : txids)
-    {
-        result.push_back(txid.ToString());
-    }
-    return result;
 }
 
 static UniValue listunspent(const JSONRPCRequest& request)
@@ -3150,7 +3106,7 @@ UniValue signrawtransactionwithwallet(const JSONRPCRequest& request)
                                     {"scriptPubKey", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "script key"},
                                     {"redeemScript", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "(required for P2SH) redeem script"},
                                     {"witnessScript", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "(required for P2WSH or P2SH-P2WSH) witness script"},
-                                    {"amount", RPCArg::Type::AMOUNT, RPCArg::Optional::NO, "The amount spent"},
+                                    {"amount", RPCArg::Type::AMOUNT, RPCArg::Optional::OMITTED, "(required for Segwit inputs) the amount spent"},
                                 },
                             },
                         },
@@ -3881,19 +3837,6 @@ UniValue sethdseed(const JSONRPCRequest& request)
     return NullUniValue;
 }
 
-void AddKeypathToMap(const CWallet* pwallet, const CKeyID& keyID, std::map<CPubKey, KeyOriginInfo>& hd_keypaths)
-{
-    CPubKey vchPubKey;
-    if (!pwallet->GetPubKey(keyID, vchPubKey)) {
-        return;
-    }
-    KeyOriginInfo info;
-    if (!pwallet->GetKeyOrigin(keyID, info)) {
-        throw JSONRPCError(RPC_INTERNAL_ERROR, "Internal keypath is broken");
-    }
-    hd_keypaths.emplace(vchPubKey, std::move(info));
-}
-
 UniValue walletprocesspsbt(const JSONRPCRequest& request)
 {
     std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
@@ -4098,7 +4041,6 @@ UniValue importmulti(const JSONRPCRequest& request);
 static const CRPCCommand commands[] =
 { //  category              name                                actor (function)                argNames
     //  --------------------- ------------------------          -----------------------         ----------
-    { "hidden",             "resendwallettransactions",         &resendwallettransactions,      {} },
     { "rawtransactions",    "fundrawtransaction",               &fundrawtransaction,            {"hexstring","options","iswitness"} },
     { "wallet",             "abandontransaction",               &abandontransaction,            {"txid"} },
     { "wallet",             "abortrescan",                      &abortrescan,                   {} },
@@ -4156,8 +4098,8 @@ static const CRPCCommand commands[] =
 };
 // clang-format on
 
-void RegisterWalletRPCCommands(CRPCTable &t)
+void RegisterWalletRPCCommands(interfaces::Chain& chain, std::vector<std::unique_ptr<interfaces::Handler>>& handlers)
 {
     for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++)
-        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
+        handlers.emplace_back(chain.handleRpc(commands[vcidx]));
 }
