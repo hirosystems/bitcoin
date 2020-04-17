@@ -1,5 +1,5 @@
 // Copyright (c) 2010 Satoshi Nakamoto
-// Copyright (c) 2009-2018 The Bitcoin Core developers
+// Copyright (c) 2009-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,13 +7,12 @@
 #define BITCOIN_RPC_SERVER_H
 
 #include <amount.h>
-#include <rpc/protocol.h>
-#include <uint256.h>
+#include <rpc/request.h>
 
-#include <list>
 #include <map>
 #include <stdint.h>
 #include <string>
+#include <functional>
 
 #include <univalue.h>
 
@@ -26,30 +25,6 @@ namespace RPCServer
     void OnStarted(std::function<void ()> slot);
     void OnStopped(std::function<void ()> slot);
 }
-
-/** Wrapper for UniValue::VType, which includes typeAny:
- * Used to denote don't care type. */
-struct UniValueType {
-    UniValueType(UniValue::VType _type) : typeAny(false), type(_type) {}
-    UniValueType() : typeAny(true) {}
-    bool typeAny;
-    UniValue::VType type;
-};
-
-class JSONRPCRequest
-{
-public:
-    UniValue id;
-    std::string strMethod;
-    UniValue params;
-    bool fHelp;
-    std::string URI;
-    std::string authUser;
-    std::string peerAddr;
-
-    JSONRPCRequest() : id(NullUniValue), params(NullUniValue), fHelp(false) {}
-    void parse(const UniValue& valRequest);
-};
 
 /** Query whether RPC is running */
 bool IsRPCRunning();
@@ -64,26 +39,6 @@ void SetRPCWarmupFinished();
 
 /* returns the current warmup state.  */
 bool RPCIsInWarmup(std::string *outStatus);
-
-/**
- * Type-check arguments; throws JSONRPCError if wrong type given. Does not check that
- * the right number of arguments are passed, just that any passed are the correct type.
- */
-void RPCTypeCheck(const UniValue& params,
-                  const std::list<UniValueType>& typesExpected, bool fAllowNull=false);
-
-/**
- * Type-check one argument; throws JSONRPCError if wrong type given.
- */
-void RPCTypeCheckArgument(const UniValue& value, const UniValueType& typeExpected);
-
-/*
-  Check for expected keys/value types in an Object.
-*/
-void RPCTypeCheckObj(const UniValue& o,
-    const std::map<std::string, UniValueType>& typesExpected,
-    bool fAllowNull = false,
-    bool fStrict = false);
 
 /** Opaque base class for timers returned by NewTimerFunc.
  * This provides no methods at the moment, but makes sure that delete
@@ -203,19 +158,6 @@ public:
 bool IsDeprecatedRPCEnabled(const std::string& method);
 
 extern CRPCTable tableRPC;
-
-/**
- * Utilities: convert hex-encoded Values
- * (throws error if not hex).
- */
-extern uint256 ParseHashV(const UniValue& v, std::string strName);
-extern uint256 ParseHashO(const UniValue& o, std::string strKey);
-extern std::vector<unsigned char> ParseHexV(const UniValue& v, std::string strName);
-extern std::vector<unsigned char> ParseHexO(const UniValue& o, std::string strKey);
-
-extern CAmount AmountFromValue(const UniValue& value);
-extern std::string HelpExampleCli(const std::string& methodname, const std::string& args);
-extern std::string HelpExampleRpc(const std::string& methodname, const std::string& args);
 
 void StartRPC();
 void InterruptRPC();

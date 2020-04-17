@@ -3,11 +3,16 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test node responses to invalid network messages."""
-import os
+import asyncio
 import struct
+import sys
 
 from test_framework import messages
-from test_framework.mininode import P2PDataStore
+from test_framework.mininode import (
+    NetworkThread,
+    P2PDataStore,
+    P2PInterface,
+)
 from test_framework.test_framework import BitcoinTestFramework
 
 
@@ -46,6 +51,7 @@ class InvalidMessagesTest(BitcoinTestFramework):
         self.test_checksum()
         self.test_size()
         self.test_command()
+        self.test_large_inv()
 
         node = self.nodes[0]
         self.node = node
@@ -64,45 +70,45 @@ class InvalidMessagesTest(BitcoinTestFramework):
         msg_at_size = msg_unrecognized(str_data="b" * valid_data_limit)
         assert len(msg_at_size.serialize()) == msg_limit
 
-        increase_allowed = 0.5
-        if [s for s in os.environ.get("BITCOIN_CONFIG", "").split(" ") if "--with-sanitizers" in s and "address" in s]:
-            increase_allowed = 3.5
-        with node.assert_memory_usage_stable(increase_allowed=increase_allowed):
-            self.log.info(
-                "Sending a bunch of large, junk messages to test "
-                "memory exhaustion. May take a bit...")
+        self.log.info("Sending a bunch of large, junk messages to test memory exhaustion. May take a bit...")
 
-            # Run a bunch of times to test for memory exhaustion.
-            for _ in range(80):
-                node.p2p.send_message(msg_at_size)
+        # Run a bunch of times to test for memory exhaustion.
+        for _ in range(80):
+            node.p2p.send_message(msg_at_size)
 
-            # Check that, even though the node is being hammered by nonsense from one
-            # connection, it can still service other peers in a timely way.
-            for _ in range(20):
-                conn2.sync_with_ping(timeout=2)
+        # Check that, even though the node is being hammered by nonsense from one
+        # connection, it can still service other peers in a timely way.
+        for _ in range(20):
+            conn2.sync_with_ping(timeout=2)
 
-            # Peer 1, despite serving up a bunch of nonsense, should still be connected.
-            self.log.info("Waiting for node to drop junk messages.")
-            node.p2p.sync_with_ping(timeout=120)
-            assert node.p2p.is_connected
+        # Peer 1, despite serving up a bunch of nonsense, should still be connected.
+        self.log.info("Waiting for node to drop junk messages.")
+        node.p2p.sync_with_ping(timeout=400)
+        assert node.p2p.is_connected
 
         #
         # 1.
         #
         # Send an oversized message, ensure we're disconnected.
         #
-        msg_over_size = msg_unrecognized(str_data="b" * (valid_data_limit + 1))
-        assert len(msg_over_size.serialize()) == (msg_limit + 1)
+        # Under macOS this test is skipped due to an unexpected error code
+        # returned from the closing socket which python/asyncio does not
+        # yet know how to handle.
+        #
+        if sys.platform != 'darwin':
+            msg_over_size = msg_unrecognized(str_data="b" * (valid_data_limit + 1))
+            assert len(msg_over_size.serialize()) == (msg_limit + 1)
 
-        with node.assert_debug_log(["Oversized message from peer=4, disconnecting"]):
             # An unknown message type (or *any* message type) over
             # MAX_PROTOCOL_MESSAGE_LENGTH should result in a disconnect.
             node.p2p.send_message(msg_over_size)
             node.p2p.wait_for_disconnect(timeout=4)
 
-        node.disconnect_p2ps()
-        conn = node.add_p2p_connection(P2PDataStore())
-        conn.wait_for_verack()
+            node.disconnect_p2ps()
+            conn = node.add_p2p_connection(P2PDataStore())
+            conn.wait_for_verack()
+        else:
+            self.log.info("Skipping test p2p_invalid_messages/1 (oversized message) under macOS")
 
         #
         # 2.
@@ -139,12 +145,18 @@ class InvalidMessagesTest(BitcoinTestFramework):
 
         # Node is still up.
         conn = node.add_p2p_connection(P2PDataStore())
-        conn.sync_with_ping()
 
     def test_magic_bytes(self):
         conn = self.nodes[0].add_p2p_connection(P2PDataStore())
-        conn._on_data = lambda: None  # Need to ignore all incoming messages from now, since they come with "invalid" magic bytes
-        conn.magic_bytes = b'\x00\x11\x22\x32'
+
+        async def swap_magic_bytes():
+            conn._on_data = lambda: None  # Need to ignore all incoming messages from now, since they come with "invalid" magic bytes
+            conn.magic_bytes = b'\x00\x11\x22\x32'
+
+        # Call .result() to block until the atomic swap is complete, otherwise
+        # we might run into races later on
+        asyncio.run_coroutine_threadsafe(swap_magic_bytes(), NetworkThread.network_event_loop).result()
+
         with self.nodes[0].assert_debug_log(['PROCESSMESSAGE: INVALID MESSAGESTART ping']):
             conn.send_message(messages.msg_ping(nonce=0xff))
             conn.wait_for_disconnect(timeout=1)
@@ -152,7 +164,7 @@ class InvalidMessagesTest(BitcoinTestFramework):
 
     def test_checksum(self):
         conn = self.nodes[0].add_p2p_connection(P2PDataStore())
-        with self.nodes[0].assert_debug_log(['ProcessMessages(badmsg, 2 bytes): CHECKSUM ERROR expected 78df0a04 was ffffffff']):
+        with self.nodes[0].assert_debug_log(['CHECKSUM ERROR (badmsg, 2 bytes), expected 78df0a04 was ffffffff']):
             msg = conn.build_message(msg_unrecognized(str_data="d"))
             cut_len = (
                 4 +  # magic
@@ -190,6 +202,19 @@ class InvalidMessagesTest(BitcoinTestFramework):
             self.nodes[0].p2p.send_raw_message(msg)
             conn.sync_with_ping(timeout=1)
             self.nodes[0].disconnect_p2ps()
+
+    def test_large_inv(self):
+        conn = self.nodes[0].add_p2p_connection(P2PInterface())
+        with self.nodes[0].assert_debug_log(['Misbehaving', 'peer=4 (0 -> 20): message inv size() = 50001']):
+            msg = messages.msg_inv([messages.CInv(1, 1)] * 50001)
+            conn.send_and_ping(msg)
+        with self.nodes[0].assert_debug_log(['Misbehaving', 'peer=4 (20 -> 40): message getdata size() = 50001']):
+            msg = messages.msg_getdata([messages.CInv(1, 1)] * 50001)
+            conn.send_and_ping(msg)
+        with self.nodes[0].assert_debug_log(['Misbehaving', 'peer=4 (40 -> 60): headers message size = 2001']):
+            msg = messages.msg_headers([messages.CBlockHeader()] * 2001)
+            conn.send_and_ping(msg)
+        self.nodes[0].disconnect_p2ps()
 
     def _tweak_msg_data_size(self, message, wrong_size):
         """

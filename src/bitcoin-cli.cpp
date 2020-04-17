@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2018 The Bitcoin Core developers
+// Copyright (c) 2009-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -9,12 +9,15 @@
 
 #include <chainparamsbase.h>
 #include <clientversion.h>
-#include <fs.h>
 #include <rpc/client.h>
 #include <rpc/protocol.h>
-#include <util/system.h>
+#include <rpc/request.h>
 #include <util/strencodings.h>
+#include <util/system.h>
+#include <util/translation.h>
+#include <util/url.h>
 
+#include <functional>
 #include <memory>
 #include <stdio.h>
 #include <tuple>
@@ -24,8 +27,10 @@
 #include <support/events.h>
 
 #include <univalue.h>
+#include <compat/stdin.h>
 
 const std::function<std::string(const char*)> G_TRANSLATION_FUN = nullptr;
+UrlDecodeFn* const URL_DECODE = urlDecode;
 
 static const char DEFAULT_RPCCONNECT[] = "127.0.0.1";
 static const int DEFAULT_HTTP_CLIENT_TIMEOUT=900;
@@ -40,22 +45,23 @@ static void SetupCliArgs()
     const auto testnetBaseParams = CreateBaseChainParams(CBaseChainParams::TESTNET);
     const auto regtestBaseParams = CreateBaseChainParams(CBaseChainParams::REGTEST);
 
-    gArgs.AddArg("-version", "Print version and exit", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-conf=<file>", strprintf("Specify configuration file. Relative paths will be prefixed by datadir location. (default: %s)", BITCOIN_CONF_FILENAME), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-datadir=<dir>", "Specify data directory", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-getinfo", "Get general information from the remote server. Note that unlike server-side RPC calls, the results of -getinfo is the result of multiple non-atomic requests. Some entries in the result may represent results from different states (e.g. wallet balance may be as of a different block from the chain state reported)", false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-version", "Print version and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-conf=<file>", strprintf("Specify configuration file. Relative paths will be prefixed by datadir location. (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-getinfo", "Get general information from the remote server. Note that unlike server-side RPC calls, the results of -getinfo is the result of multiple non-atomic requests. Some entries in the result may represent results from different states (e.g. wallet balance may be as of a different block from the chain state reported)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     SetupChainParamsBaseOptions();
-    gArgs.AddArg("-named", strprintf("Pass named instead of positional arguments (default: %s)", DEFAULT_NAMED), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcclienttimeout=<n>", strprintf("Timeout in seconds during HTTP requests, or 0 for no timeout. (default: %d)", DEFAULT_HTTP_CLIENT_TIMEOUT), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcconnect=<ip>", strprintf("Send commands to node running on <ip> (default: %s)", DEFAULT_RPCCONNECT), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpccookiefile=<loc>", "Location of the auth cookie. Relative paths will be prefixed by a net-specific datadir location. (default: data dir)", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcpassword=<pw>", "Password for JSON-RPC connections", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcport=<port>", strprintf("Connect to JSON-RPC on <port> (default: %u, testnet: %u, regtest: %u)", defaultBaseParams->RPCPort(), testnetBaseParams->RPCPort(), regtestBaseParams->RPCPort()), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcuser=<user>", "Username for JSON-RPC connections", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcwait", "Wait for RPC server to start", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-rpcwallet=<walletname>", "Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-stdin", "Read extra arguments from standard input, one per line until EOF/Ctrl-D (recommended for sensitive information such as passphrases). When combined with -stdinrpcpass, the first line from standard input is used for the RPC password.", false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-stdinrpcpass", "Read RPC password from standard input as a single line. When combined with -stdin, the first line from standard input is used for the RPC password.", false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-named", strprintf("Pass named instead of positional arguments (default: %s)", DEFAULT_NAMED), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcclienttimeout=<n>", strprintf("Timeout in seconds during HTTP requests, or 0 for no timeout. (default: %d)", DEFAULT_HTTP_CLIENT_TIMEOUT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcconnect=<ip>", strprintf("Send commands to node running on <ip> (default: %s)", DEFAULT_RPCCONNECT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpccookiefile=<loc>", "Location of the auth cookie. Relative paths will be prefixed by a net-specific datadir location. (default: data dir)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcpassword=<pw>", "Password for JSON-RPC connections", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcport=<port>", strprintf("Connect to JSON-RPC on <port> (default: %u, testnet: %u, regtest: %u)", defaultBaseParams->RPCPort(), testnetBaseParams->RPCPort(), regtestBaseParams->RPCPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcuser=<user>", "Username for JSON-RPC connections", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcwait", "Wait for RPC server to start", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcwallet=<walletname>", "Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-stdin", "Read extra arguments from standard input, one per line until EOF/Ctrl-D (recommended for sensitive information such as passphrases). When combined with -stdinrpcpass, the first line from standard input is used for the RPC password.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-stdinrpcpass", "Read RPC password from standard input as a single line. When combined with -stdin, the first line from standard input is used for the RPC password. When combined with -stdinwalletpassphrase, -stdinrpcpass consumes the first line, and -stdinwalletpassphrase consumes the second.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-stdinwalletpassphrase", "Read wallet passphrase from standard input as a single line. When combined with -stdin, the first line from standard input is used for the wallet passphrase.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 }
 
 /** libevent event log callback */
@@ -101,7 +107,7 @@ static int AppInitRPC(int argc, char* argv[])
     SetupCliArgs();
     std::string error;
     if (!gArgs.ParseParameters(argc, argv, error)) {
-        fprintf(stderr, "Error parsing command line arguments: %s\n", error.c_str());
+        tfm::format(std::cerr, "Error parsing command line arguments: %s\n", error);
         return EXIT_FAILURE;
     }
     if (argc < 2 || HelpRequested(gArgs) || gArgs.IsArgSet("-version")) {
@@ -115,26 +121,26 @@ static int AppInitRPC(int argc, char* argv[])
             strUsage += "\n" + gArgs.GetHelpMessage();
         }
 
-        fprintf(stdout, "%s", strUsage.c_str());
+        tfm::format(std::cout, "%s", strUsage);
         if (argc < 2) {
-            fprintf(stderr, "Error: too few parameters\n");
+            tfm::format(std::cerr, "Error: too few parameters\n");
             return EXIT_FAILURE;
         }
         return EXIT_SUCCESS;
     }
-    if (!fs::is_directory(GetDataDir(false))) {
-        fprintf(stderr, "Error: Specified data directory \"%s\" does not exist.\n", gArgs.GetArg("-datadir", "").c_str());
+    if (!CheckDataDirOption()) {
+        tfm::format(std::cerr, "Error: Specified data directory \"%s\" does not exist.\n", gArgs.GetArg("-datadir", ""));
         return EXIT_FAILURE;
     }
     if (!gArgs.ReadConfigFiles(error, true)) {
-        fprintf(stderr, "Error reading configuration file: %s\n", error.c_str());
+        tfm::format(std::cerr, "Error reading configuration file: %s\n", error);
         return EXIT_FAILURE;
     }
-    // Check for -testnet or -regtest parameter (BaseParams() calls are only valid after this clause)
+    // Check for -chain, -testnet or -regtest parameter (BaseParams() calls are only valid after this clause)
     try {
         SelectBaseParams(gArgs.GetChainName());
     } catch (const std::exception& e) {
-        fprintf(stderr, "Error: %s\n", e.what());
+        tfm::format(std::cerr, "Error: %s\n", e.what());
         return EXIT_FAILURE;
     }
     return CONTINUE_EXECUTION;
@@ -224,6 +230,7 @@ public:
     const int ID_NETWORKINFO = 0;
     const int ID_BLOCKCHAININFO = 1;
     const int ID_WALLETINFO = 2;
+    const int ID_BALANCES = 3;
 
     /** Create a simulated `getinfo` request. */
     UniValue PrepareRequest(const std::string& method, const std::vector<std::string>& args) override
@@ -235,6 +242,7 @@ public:
         result.push_back(JSONRPCRequestObj("getnetworkinfo", NullUniValue, ID_NETWORKINFO));
         result.push_back(JSONRPCRequestObj("getblockchaininfo", NullUniValue, ID_BLOCKCHAININFO));
         result.push_back(JSONRPCRequestObj("getwalletinfo", NullUniValue, ID_WALLETINFO));
+        result.push_back(JSONRPCRequestObj("getbalances", NullUniValue, ID_BALANCES));
         return result;
     }
 
@@ -242,9 +250,9 @@ public:
     UniValue ProcessReply(const UniValue &batch_in) override
     {
         UniValue result(UniValue::VOBJ);
-        std::vector<UniValue> batch = JSONRPCProcessBatchReply(batch_in, 3);
-        // Errors in getnetworkinfo() and getblockchaininfo() are fatal, pass them on
-        // getwalletinfo() is allowed to fail in case there is no wallet.
+        std::vector<UniValue> batch = JSONRPCProcessBatchReply(batch_in, batch_in.size());
+        // Errors in getnetworkinfo() and getblockchaininfo() are fatal, pass them on;
+        // getwalletinfo() and getbalances() are allowed to fail if there is no wallet.
         if (!batch[ID_NETWORKINFO]["error"].isNull()) {
             return batch[ID_NETWORKINFO];
         }
@@ -252,22 +260,23 @@ public:
             return batch[ID_BLOCKCHAININFO];
         }
         result.pushKV("version", batch[ID_NETWORKINFO]["result"]["version"]);
-        result.pushKV("protocolversion", batch[ID_NETWORKINFO]["result"]["protocolversion"]);
         result.pushKV("blocks", batch[ID_BLOCKCHAININFO]["result"]["blocks"]);
+        result.pushKV("headers", batch[ID_BLOCKCHAININFO]["result"]["headers"]);
+        result.pushKV("verificationprogress", batch[ID_BLOCKCHAININFO]["result"]["verificationprogress"]);
         result.pushKV("timeoffset", batch[ID_NETWORKINFO]["result"]["timeoffset"]);
         result.pushKV("connections", batch[ID_NETWORKINFO]["result"]["connections"]);
         result.pushKV("proxy", batch[ID_NETWORKINFO]["result"]["networks"][0]["proxy"]);
         result.pushKV("difficulty", batch[ID_BLOCKCHAININFO]["result"]["difficulty"]);
         result.pushKV("chain", UniValue(batch[ID_BLOCKCHAININFO]["result"]["chain"]));
-        if (!batch[ID_WALLETINFO].isNull()) {
-            result.pushKV("walletversion", batch[ID_WALLETINFO]["result"]["walletversion"]);
-            result.pushKV("balance", batch[ID_WALLETINFO]["result"]["balance"]);
-            result.pushKV("keypoololdest", batch[ID_WALLETINFO]["result"]["keypoololdest"]);
+        if (!batch[ID_WALLETINFO]["result"].isNull()) {
             result.pushKV("keypoolsize", batch[ID_WALLETINFO]["result"]["keypoolsize"]);
             if (!batch[ID_WALLETINFO]["result"]["unlocked_until"].isNull()) {
                 result.pushKV("unlocked_until", batch[ID_WALLETINFO]["result"]["unlocked_until"]);
             }
             result.pushKV("paytxfee", batch[ID_WALLETINFO]["result"]["paytxfee"]);
+        }
+        if (!batch[ID_BALANCES]["result"].isNull()) {
+            result.pushKV("balance", batch[ID_BALANCES]["result"]["mine"]["trusted"]);
         }
         result.pushKV("relayfee", batch[ID_NETWORKINFO]["result"]["relayfee"]);
         result.pushKV("warnings", batch[ID_NETWORKINFO]["result"]["warnings"]);
@@ -311,7 +320,20 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
 
     // Synchronously look up hostname
     raii_evhttp_connection evcon = obtain_evhttp_connection_base(base.get(), host, port);
-    evhttp_connection_set_timeout(evcon.get(), gArgs.GetArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT));
+
+    // Set connection timeout
+    {
+        const int timeout = gArgs.GetArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT);
+        if (timeout > 0) {
+            evhttp_connection_set_timeout(evcon.get(), timeout);
+        } else {
+            // Indefinite request timeouts are not possible in libevent-http, so we
+            // set the timeout to a very long time period instead.
+
+            constexpr int YEAR_IN_SECONDS = 31556952; // Average length of year in Gregorian calendar
+            evhttp_connection_set_timeout(evcon.get(), 5 * YEAR_IN_SECONDS);
+        }
+    }
 
     HTTPReply response;
     raii_evhttp_request req = obtain_evhttp_request(http_request_done, (void*)&response);
@@ -349,7 +371,7 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
     std::string endpoint = "/";
     if (!gArgs.GetArgs("-rpcwallet").empty()) {
         std::string walletName = gArgs.GetArg("-rpcwallet", "");
-        char *encodedURI = evhttp_uriencode(walletName.c_str(), walletName.size(), false);
+        char *encodedURI = evhttp_uriencode(walletName.data(), walletName.size(), false);
         if (encodedURI) {
             endpoint = "/wallet/"+ std::string(encodedURI);
             free(encodedURI);
@@ -376,7 +398,7 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
         if (failedToGetAuthCookie) {
             throw std::runtime_error(strprintf(
                 "Could not locate RPC credentials. No authentication cookie could be found, and RPC password is not set.  See -rpcpassword and -stdinrpcpass.  Configuration file: (%s)",
-                GetConfigFile(gArgs.GetArg("-conf", BITCOIN_CONF_FILENAME)).string().c_str()));
+                GetConfigFile(gArgs.GetArg("-conf", BITCOIN_CONF_FILENAME)).string()));
         } else {
             throw std::runtime_error("Authorization failed: Incorrect rpcuser or rpcpassword");
         }
@@ -408,17 +430,46 @@ static int CommandLineRPC(int argc, char *argv[])
         }
         std::string rpcPass;
         if (gArgs.GetBoolArg("-stdinrpcpass", false)) {
+            NO_STDIN_ECHO();
+            if (!StdinReady()) {
+                fputs("RPC password> ", stderr);
+                fflush(stderr);
+            }
             if (!std::getline(std::cin, rpcPass)) {
                 throw std::runtime_error("-stdinrpcpass specified but failed to read from standard input");
+            }
+            if (StdinTerminal()) {
+                fputc('\n', stdout);
             }
             gArgs.ForceSetArg("-rpcpassword", rpcPass);
         }
         std::vector<std::string> args = std::vector<std::string>(&argv[1], &argv[argc]);
+        if (gArgs.GetBoolArg("-stdinwalletpassphrase", false)) {
+            NO_STDIN_ECHO();
+            std::string walletPass;
+            if (args.size() < 1 || args[0].substr(0, 16) != "walletpassphrase") {
+                throw std::runtime_error("-stdinwalletpassphrase is only applicable for walletpassphrase(change)");
+            }
+            if (!StdinReady()) {
+                fputs("Wallet passphrase> ", stderr);
+                fflush(stderr);
+            }
+            if (!std::getline(std::cin, walletPass)) {
+                throw std::runtime_error("-stdinwalletpassphrase specified but failed to read from standard input");
+            }
+            if (StdinTerminal()) {
+                fputc('\n', stdout);
+            }
+            args.insert(args.begin() + 1, walletPass);
+        }
         if (gArgs.GetBoolArg("-stdin", false)) {
             // Read one arg per line from stdin and append
             std::string line;
             while (std::getline(std::cin, line)) {
                 args.push_back(line);
+            }
+            if (StdinTerminal()) {
+                fputc('\n', stdout);
             }
         }
         std::unique_ptr<BaseRequestHandler> rh;
@@ -479,7 +530,7 @@ static int CommandLineRPC(int argc, char *argv[])
             }
             catch (const CConnectionFailed&) {
                 if (fWait)
-                    MilliSleep(1000);
+                    UninterruptibleSleep(std::chrono::milliseconds{1000});
                 else
                     throw;
             }
@@ -495,7 +546,7 @@ static int CommandLineRPC(int argc, char *argv[])
     }
 
     if (strPrint != "") {
-        fprintf((nRet == 0 ? stdout : stderr), "%s\n", strPrint.c_str());
+        tfm::format(nRet == 0 ? std::cout : std::cerr, "%s\n", strPrint);
     }
     return nRet;
 }
@@ -508,7 +559,7 @@ int main(int argc, char* argv[])
 #endif
     SetupEnvironment();
     if (!SetupNetworking()) {
-        fprintf(stderr, "Error: Initializing networking failed\n");
+        tfm::format(std::cerr, "Error: Initializing networking failed\n");
         return EXIT_FAILURE;
     }
     event_set_log_callback(&libevent_log_cb);

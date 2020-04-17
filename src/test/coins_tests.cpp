@@ -1,16 +1,17 @@
-// Copyright (c) 2014-2018 The Bitcoin Core developers
+// Copyright (c) 2014-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <attributes.h>
+#include <clientversion.h>
 #include <coins.h>
-#include <consensus/validation.h>
 #include <script/standard.h>
-#include <test/test_bitcoin.h>
+#include <streams.h>
+#include <test/util/setup_common.h>
+#include <txdb.h>
 #include <uint256.h>
 #include <undo.h>
 #include <util/strencodings.h>
-#include <validation.h>
 
 #include <map>
 #include <vector>
@@ -109,7 +110,12 @@ static const unsigned int NUM_SIMULATION_ITERATIONS = 40000;
 //
 // During the process, booleans are kept to make sure that the randomized
 // operation hits all branches.
-BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
+//
+// If fake_best_block is true, assign a random uint256 to mock the recording
+// of best block on flush. This is necessary when using CCoinsViewDB as the base,
+// otherwise we'll hit an assertion in BatchWrite.
+//
+void SimulationTest(CCoinsView* base, bool fake_best_block)
 {
     // Various coverage trackers.
     bool removed_all_caches = false;
@@ -126,9 +132,8 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
     std::map<COutPoint, Coin> result;
 
     // The cache stack.
-    CCoinsViewTest base; // A CCoinsViewTest at the bottom.
     std::vector<CCoinsViewCacheTest*> stack; // A stack of CCoinsViewCaches on top.
-    stack.push_back(new CCoinsViewCacheTest(&base)); // Start with one cache.
+    stack.push_back(new CCoinsViewCacheTest(base)); // Start with one cache.
 
     // Use a limited set of random transaction ids, so we do test overwriting entries.
     std::vector<uint256> txids;
@@ -211,6 +216,7 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
             // Every 100 iterations, flush an intermediate cache
             if (stack.size() > 1 && InsecureRandBool() == 0) {
                 unsigned int flushIndex = InsecureRandRange(stack.size() - 1);
+                if (fake_best_block) stack[flushIndex]->SetBestBlock(InsecureRand256());
                 BOOST_CHECK(stack[flushIndex]->Flush());
             }
         }
@@ -218,13 +224,14 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
             // Every 100 iterations, change the cache stack.
             if (stack.size() > 0 && InsecureRandBool() == 0) {
                 //Remove the top cache
+                if (fake_best_block) stack.back()->SetBestBlock(InsecureRand256());
                 BOOST_CHECK(stack.back()->Flush());
                 delete stack.back();
                 stack.pop_back();
             }
             if (stack.size() == 0 || (stack.size() < 4 && InsecureRandBool())) {
                 //Add a new cache
-                CCoinsView* tip = &base;
+                CCoinsView* tip = base;
                 if (stack.size() > 0) {
                     tip = stack.back();
                 } else {
@@ -256,6 +263,16 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
     BOOST_CHECK(uncached_an_entry);
 }
 
+// Run the above simulation for multiple base types.
+BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
+{
+    CCoinsViewTest base;
+    SimulationTest(&base, false);
+
+    CCoinsViewDB db_base{"test", /*nCacheSize*/ 1 << 23, /*fMemory*/ true, /*fWipe*/ false};
+    SimulationTest(&db_base, true);
+}
+
 // Store of all necessary tx and undo data for next test
 typedef std::map<COutPoint, std::tuple<CTransaction,CTxUndo,Coin>> UtxoData;
 UtxoData utxoData;
@@ -279,7 +296,8 @@ UtxoData::iterator FindRandomFrom(const std::set<COutPoint> &utxoSet) {
 // has the expected effect (the other duplicate is overwritten at all cache levels)
 BOOST_AUTO_TEST_CASE(updatecoins_simulation_test)
 {
-    SeedInsecureRand(/* deterministic */ true);
+    SeedInsecureRand(SeedRand::ZEROS);
+    g_mock_deterministic_tests = true;
 
     bool spent_a_duplicate_coinbase = false;
     // A simple map to track what we expect the cache stack to represent.
@@ -474,6 +492,8 @@ BOOST_AUTO_TEST_CASE(updatecoins_simulation_test)
 
     // Verify coverage.
     BOOST_CHECK(spent_a_duplicate_coinbase);
+
+    g_mock_deterministic_tests = false;
 }
 
 BOOST_AUTO_TEST_CASE(ccoins_serialization)
@@ -485,7 +505,7 @@ BOOST_AUTO_TEST_CASE(ccoins_serialization)
     BOOST_CHECK_EQUAL(cc1.fCoinBase, false);
     BOOST_CHECK_EQUAL(cc1.nHeight, 203998U);
     BOOST_CHECK_EQUAL(cc1.out.nValue, CAmount{60000000000});
-    BOOST_CHECK_EQUAL(HexStr(cc1.out.scriptPubKey), HexStr(GetScriptForDestination(CKeyID(uint160(ParseHex("816115944e077fe7c803cfa57f29b36bf87c1d35"))))));
+    BOOST_CHECK_EQUAL(HexStr(cc1.out.scriptPubKey), HexStr(GetScriptForDestination(PKHash(uint160(ParseHex("816115944e077fe7c803cfa57f29b36bf87c1d35"))))));
 
     // Good example
     CDataStream ss2(ParseHex("8ddf77bbd123008c988f1a4a4de2161e0f50aac7f17e7f9555caa4"), SER_DISK, CLIENT_VERSION);
@@ -494,7 +514,7 @@ BOOST_AUTO_TEST_CASE(ccoins_serialization)
     BOOST_CHECK_EQUAL(cc2.fCoinBase, true);
     BOOST_CHECK_EQUAL(cc2.nHeight, 120891U);
     BOOST_CHECK_EQUAL(cc2.out.nValue, 110397);
-    BOOST_CHECK_EQUAL(HexStr(cc2.out.scriptPubKey), HexStr(GetScriptForDestination(CKeyID(uint160(ParseHex("8c988f1a4a4de2161e0f50aac7f17e7f9555caa4"))))));
+    BOOST_CHECK_EQUAL(HexStr(cc2.out.scriptPubKey), HexStr(GetScriptForDestination(PKHash(uint160(ParseHex("8c988f1a4a4de2161e0f50aac7f17e7f9555caa4"))))));
 
     // Smallest possible example
     CDataStream ss3(ParseHex("000006"), SER_DISK, CLIENT_VERSION);

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2018-2019 The Bitcoin Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 export LC_ALL=C
 KNOWN_VIOLATIONS=(
@@ -8,10 +11,11 @@ KNOWN_VIOLATIONS=(
     "src/dbwrapper.cpp:.*vsnprintf"
     "src/httprpc.cpp.*trim"
     "src/init.cpp:.*atoi"
-    "src/init.cpp:.*fprintf"
     "src/qt/rpcconsole.cpp:.*atoi"
     "src/rest.cpp:.*strtol"
     "src/test/dbwrapper_tests.cpp:.*snprintf"
+    "src/test/fuzz/locale.cpp"
+    "src/test/fuzz/parse_numbers.cpp:.*atoi"
     "src/torcontrol.cpp:.*atoi"
     "src/torcontrol.cpp:.*strtol"
     "src/util/strencodings.cpp:.*atoi"
@@ -85,7 +89,7 @@ LOCALE_DEPENDENT_FUNCTIONS=(
     mbtowc       # LC_CTYPE
     mktime
     normalize    # boost::locale::normalize
-#   printf       # LC_NUMERIC
+    printf       # LC_NUMERIC
     putwc
     putwchar
     scanf        # LC_NUMERIC
@@ -93,6 +97,7 @@ LOCALE_DEPENDENT_FUNCTIONS=(
     snprintf
     sprintf
     sscanf
+    std::to_string
     stod
     stof
     stoi
@@ -189,8 +194,7 @@ GIT_GREP_OUTPUT=$(git grep -E "[^a-zA-Z0-9_\`'\"<>](${REGEXP_LOCALE_DEPENDENT_FU
 EXIT_CODE=0
 for LOCALE_DEPENDENT_FUNCTION in "${LOCALE_DEPENDENT_FUNCTIONS[@]}"; do
     MATCHES=$(grep -E "[^a-zA-Z0-9_\`'\"<>]${LOCALE_DEPENDENT_FUNCTION}(_r|_s)?[^a-zA-Z0-9_\`'\"<>]" <<< "${GIT_GREP_OUTPUT}" | \
-        grep -vE "\.(c|cpp|h):\s*(//|\*|/\*|\").*${LOCALE_DEPENDENT_FUNCTION}" | \
-        grep -vE 'fprintf\(.*(stdout|stderr)')
+        grep -vE "\.(c|cpp|h):\s*(//|\*|/\*|\").*${LOCALE_DEPENDENT_FUNCTION}")
     if [[ ${REGEXP_IGNORE_EXTERNAL_DEPENDENCIES} != "" ]]; then
         MATCHES=$(grep -vE "${REGEXP_IGNORE_EXTERNAL_DEPENDENCIES}" <<< "${MATCHES}")
     fi

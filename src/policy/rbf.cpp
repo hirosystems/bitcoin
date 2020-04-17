@@ -1,18 +1,9 @@
-// Copyright (c) 2016-2018 The Bitcoin Core developers
+// Copyright (c) 2016-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <policy/rbf.h>
-
-bool SignalsOptInRBF(const CTransaction &tx)
-{
-    for (const CTxIn &txin : tx.vin) {
-        if (txin.nSequence <= MAX_BIP125_RBF_SEQUENCE) {
-            return true;
-        }
-    }
-    return false;
-}
+#include <util/rbf.h>
 
 RBFTransactionState IsRBFOptIn(const CTransaction& tx, const CTxMemPool& pool)
 {

@@ -1,12 +1,26 @@
-(note: this is a temporary file, to be added-to by anybody, and moved to
-release-notes at release time)
+*After branching off for a major version release of Bitcoin Core, use this
+template to create the initial release notes draft.*
+
+*The release notes draft is a temporary file that can be added to by anyone. See
+[/doc/developer-notes.md#release-notes](/doc/developer-notes.md#release-notes)
+for the process.*
+
+*Create the draft, named* "*version* Release Notes Draft"
+*(e.g. "0.20.0 Release Notes Draft"), as a collaborative wiki in:*
+
+https://github.com/bitcoin-core/bitcoin-devwiki/wiki/
+
+*Before the final release, move the notes back to this git repository.*
+
+*version* Release Notes Draft
+===============================
 
 Bitcoin Core version *version* is now available from:
 
   <https://bitcoincore.org/bin/bitcoin-core-*version*/>
 
-This is a new major version release, including new features, various bugfixes
-and performance improvements, as well as updated translations.
+This release includes new features, various bug fixes and performance
+improvements, as well as updated translations.
 
 Please report bugs using the issue tracker at GitHub:
 
@@ -24,57 +38,29 @@ shut down (which might take a few minutes for older versions), then run the
 installer (on Windows) or just copy over `/Applications/Bitcoin-Qt` (on Mac)
 or `bitcoind`/`bitcoin-qt` (on Linux).
 
-The first time you run version 0.15.0, your chainstate database will be converted to a
-new format, which will take anywhere from a few minutes to half an hour,
-depending on the speed of your machine.
-
-Note that the block database format also changed in version 0.8.0 and there is no
-automatic upgrade code from before version 0.8 to version 0.15.0. Upgrading
-directly from 0.7.x and earlier without redownloading the blockchain is not supported.
-However, as usual, old wallet versions are still supported.
-
-Downgrading warning
--------------------
-
-The chainstate database for this release is not compatible with previous
-releases, so if you run 0.15 and then decide to switch back to any
-older version, you will need to run the old release with the `-reindex-chainstate`
-option to rebuild the chainstate data structures in the old format.
-
-If your node has pruning enabled, this will entail re-downloading and
-processing the entire blockchain.
+Upgrading directly from a version of Bitcoin Core that has reached its EOL is
+possible, but it might take some time if the datadir needs to be migrated. Old
+wallet versions of Bitcoin Core are generally supported.
 
 Compatibility
 ==============
 
 Bitcoin Core is supported and extensively tested on operating systems using
-the Linux kernel, macOS 10.10+, and Windows 7 and newer.  It is not recommended
+the Linux kernel, macOS 10.12+, and Windows 7 and newer. It is not recommended
 to use Bitcoin Core on unsupported systems.
 
 Bitcoin Core should also work on most other Unix-like systems but is not
-frequently tested on them.
+as frequently tested on them.
 
-From 0.17.0 onwards, macOS <10.10 is no longer supported.  0.17.0 is
-built using Qt 5.9.x, which doesn't support versions of macOS older than
-10.10.  Additionally, Bitcoin Core does not yet change appearance when
-macOS "dark mode" is activated.
+From Bitcoin Core 0.20.0 onwards, macOS versions earlier than 10.12 are no
+longer supported. Additionally, Bitcoin Core does not yet change appearance
+when macOS "dark mode" is activated.
 
-In addition to previously-supported CPU platforms, this release's
-pre-compiled distribution also provides binaries for the RISC-V
-platform.
+In addition to previously supported CPU platforms, this release's pre-compiled
+distribution provides binaries for the RISC-V platform.
 
 Notable changes
 ===============
-
-Example item
-------------
-
-
-Low-level changes
-=================
-
-Example item
-------------
 
 Credits
 =======
@@ -82,4 +68,5 @@ Credits
 Thanks to everyone who directly contributed to this release:
 
 
-As well as everyone that helped translating on [Transifex](https://www.transifex.com/bitcoin/bitcoin/).
+As well as to everyone that helped with translations on
+[Transifex](https://www.transifex.com/bitcoin/bitcoin/).
