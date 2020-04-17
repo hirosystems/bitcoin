@@ -1,5 +1,5 @@
 #!/bin/sh
-VERSION=`./src/bitcoind --version | head -1 | awk '{print $5}' |tr -d 'v' | cut -f1 -d "-"`
+VERSION=`./src/bitcoind --version | head -1 | awk '{print $4}' |tr -d 'v' | cut -f1 -d "-"`
 DIR="bitcoin-${VERSION}"
 if [ -d "${DIR}" ]; then
   rm -rf ${DIR}
