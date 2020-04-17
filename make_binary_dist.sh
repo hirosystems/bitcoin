@@ -1,6 +1,11 @@
 #!/bin/sh
 VERSION=`./src/bitcoind --version | head -1 | awk '{print $4}' |tr -d 'v' | cut -f1 -d "-"`
 DIR="bitcoin-${VERSION}"
+if [ "$1" == "--with-diff" ];then
+  DIR="bitcoin-${VERSION}-no-rpc"
+else
+  DIR="bitcoin-${VERSION}"
+fi
 if [ -d "${DIR}" ]; then
   rm -rf ${DIR}
 fi

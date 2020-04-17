@@ -55,6 +55,9 @@ make STATIC=1
 echo ""
 echo "Creating Binary dist"
 echo ""
+if [ "$1" == "--with-diff" ];then
+  sh -x make_binary_dist.sh --with-diff
+fi
 sh -x make_binary_dist.sh
 echo ""
 echo "Cleaning up"
