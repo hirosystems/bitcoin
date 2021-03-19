@@ -1,6 +1,6 @@
 name: bitcoin-prometheus
 env:
-  DOCKERHUB_IMAGE: wileyj/bitcoin
+  DOCKERHUB_IMAGE: blockstack/bitcoind
   DOCKERFILE: docker/Dockerfile
 on:
   pull_request:
