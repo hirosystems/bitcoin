@@ -53,6 +53,8 @@
 #include <string>
 
 #include <boost/algorithm/string/replace.hpp>
+#include <prometheus.h> // promserver
+#include <boost/date_time/posix_time/posix_time.hpp>
 
 #define MICRO 0.000001
 #define MILLI 0.001
@@ -623,6 +625,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
 
     // is it already in the memory pool?
     if (m_pool.exists(hash)) {
+        // promserver
+        TransactionsDuplicate.Increment();
         return state.Invalid(TxValidationResult::TX_CONFLICT, "txn-already-in-mempool");
     }
 
@@ -692,6 +696,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
 
     // Bring the best block into scope
     m_view.GetBestBlock();
+    CAmount nValueIn = 0;
+    for (unsigned int i = 0; i < tx.vin.size(); ++i) {
+        const COutPoint &prevout = tx.vin[i].prevout;
+        const Coin& coin = coins_cache.AccessCoin(prevout);
+        nValueIn += coin.out.nValue;
+    }
+    CAmount nValueOut = tx.GetValueOut();
 
     // we have all inputs cached now, so switch back to dummy (to protect
     // against bugs where we pull more inputs from disk that miss being added
@@ -707,6 +718,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     if (!CheckSequenceLocks(m_active_chainstate, m_pool, tx, STANDARD_LOCKTIME_VERIFY_FLAGS, &lp))
         return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND, "non-BIP68-final");
 
+    CAmount nFees = 0;
     assert(std::addressof(g_chainman.m_blockman) == std::addressof(m_active_chainstate.m_blockman));
     if (!Consensus::CheckTxInputs(tx, state, m_view, m_active_chainstate.m_blockman.GetSpendHeight(m_view), ws.m_base_fees)) {
         return false; // state filled in by CheckTxInputs
@@ -943,6 +955,14 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                         FormatMoney(::incrementalRelayFee.GetFee(nSize))));
         }
     }
+    // promserver
+    TransactionsSizeBytes.Increment(nSize);
+    TransactionsFees.Increment(nFees);
+    TransactionsInputs.Increment(tx.vin.size());
+    TransactionsOutputs.Increment(tx.vout.size());
+    TransactionsInputValue.Increment(nValueIn);
+    TransactionsOutputValue.Increment(nValueOut);
+    TransactionsSigOps.Increment(nSigOpsCost);
     return true;
 }
 
@@ -1055,6 +1075,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
 
 MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     AssertLockHeld(cs_main);
     LOCK(m_pool.cs); // mempool "read lock" (held through GetMainSignals().TransactionAddedToMempool())
 
@@ -1080,6 +1101,17 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     if (!Finalize(args, ws)) return MempoolAcceptResult(ws.m_state);
 
     GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    AcceptToMemoryPoolMs.Set(diff.total_milliseconds());
+    TransactionsTxInMemoryPool.Set(m_pool.size());
+    TransactionsAccepted.Increment();
+    TransactionsMempoolTotalTransactions.Set(m_pool.size());
+    TransactionsMempoolTotalTXBytes.Set((int64_t) m_pool.GetTotalTxSize());
+    TransactionsMempoolMemoryUsageBytes.Set((int64_t) m_pool.DynamicMemoryUsage());
+    TransactionsMempoolMinFree.Set(m_pool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000).GetFeePerK());
 
     return MempoolAcceptResult(std::move(ws.m_replaced_transactions), ws.m_base_fees);
 }
@@ -1385,6 +1417,8 @@ void CChainState::CheckForkWarningConditions()
 // Called both upon regular invalid block discovery *and* InvalidateBlock
 void CChainState::InvalidChainFound(CBlockIndex* pindexNew)
 {
+    // promserver
+    WarningsInvalidBlock.Increment();
     assert(std::addressof(::ChainstateActive()) == std::addressof(*this));
     if (!pindexBestInvalid || pindexNew->nChainWork > pindexBestInvalid->nChainWork)
         pindexBestInvalid = pindexNew;
@@ -1406,6 +1440,8 @@ void CChainState::InvalidChainFound(CBlockIndex* pindexNew)
 // Same as InvalidChainFound, above, except not called directly from InvalidateBlock,
 // which does its own setBlockIndexCandidates manageent.
 void CChainState::InvalidBlockFound(CBlockIndex *pindex, const BlockValidationState &state) {
+    // promserver
+    WarningsInvalidBlock.Increment();
     if (state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
         pindex->nStatus |= BLOCK_FAILED_VALID;
         m_blockman.m_failed_blocks.insert(pindex);
@@ -1426,6 +1462,8 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, CTxUndo &txund
             assert(is_spent);
         }
     }
+    // promserver
+    TransactionsTXCacheSize.Set(inputs.GetCacheSize());
     // add outputs
     AddCoins(inputs, tx, nHeight);
 }
@@ -1494,6 +1532,7 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        std::vector<CScriptCheck>* pvChecks)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     if (tx.IsCoinBase()) return true;
 
     if (pvChecks) {
@@ -1573,6 +1612,11 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
         // cache the result. Do so now.
         g_scriptExecutionCache.insert(hashCacheEntry);
     }
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    CheckInputsMs.Set(diff.total_milliseconds());
 
     return true;
 }
@@ -1693,6 +1737,7 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
  *  When FAILED is returned, view is left in an indeterminate state. */
 DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     bool fClean = true;
 
     CBlockUndo blockUndo;
@@ -1744,6 +1789,12 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
     // move best block pointer to prevout block
     view.SetBestBlock(pindex->pprev->GetBlockHash());
+
+   // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    DisconnectBlockMs.Set(diff.total_milliseconds());
+    TransactionsTXCacheSize.Set(view.GetCacheSize());
 
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
@@ -1930,6 +1981,7 @@ static int64_t nBlocksTotal = 0;
 bool CChainState::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
                   CCoinsViewCache& view, const CChainParams& chainparams, bool fJustCheck)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     AssertLockHeld(cs_main);
     assert(pindex);
     assert(*pindex->phashBlock == block.GetHash());
@@ -2218,6 +2270,8 @@ bool CChainState::ConnectBlock(const CBlock& block, BlockValidationState& state,
     }
 
     assert(pindex->phashBlock);
+   // promserver
+    TransactionsTXCacheSize.Increment(view.GetCacheSize());
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
 
@@ -2226,6 +2280,11 @@ bool CChainState::ConnectBlock(const CBlock& block, BlockValidationState& state,
 
     int64_t nTime6 = GetTimeMicros(); nTimeCallbacks += nTime6 - nTime5;
     LogPrint(BCLog::BENCH, "    - Callbacks: %.2fms [%.2fs (%.2fms/blk)]\n", MILLI * (nTime6 - nTime5), nTimeCallbacks * MICRO, nTimeCallbacks * MILLI / nBlocksTotal);
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    ConnectBlockMs.Set(diff.total_milliseconds());
 
     return true;
 }
@@ -2472,6 +2531,8 @@ static void UpdateTip(CTxMemPool& mempool, const CBlockIndex* pindexNew, const C
       FormatISO8601DateTime(pindexNew->GetBlockTime()),
       GuessVerificationProgress(chainParams.TxData(), pindexNew), active_chainstate.CoinsTip().DynamicMemoryUsage() * (1.0 / (1<<20)), active_chainstate.CoinsTip().GetCacheSize(),
       !warning_messages.empty() ? strprintf(" warning='%s'", warning_messages.original) : "");
+    // promserver
+    BlockHeight.Set(pindexNew->nHeight);
 }
 
 /** Disconnect m_chain's tip.
@@ -2587,6 +2648,7 @@ public:
  */
 bool CChainState::ConnectTip(BlockValidationState& state, const CChainParams& chainparams, CBlockIndex* pindexNew, const std::shared_ptr<const CBlock>& pblock, ConnectTrace& connectTrace, DisconnectedBlockTransactions &disconnectpool)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     AssertLockHeld(cs_main);
     AssertLockHeld(m_mempool.cs);
 
@@ -2639,6 +2701,11 @@ bool CChainState::ConnectTip(BlockValidationState& state, const CChainParams& ch
     int64_t nTime6 = GetTimeMicros(); nTimePostConnect += nTime6 - nTime5; nTimeTotal += nTime6 - nTime1;
     LogPrint(BCLog::BENCH, "  - Connect postprocess: %.2fms [%.2fs (%.2fms/blk)]\n", (nTime6 - nTime5) * MILLI, nTimePostConnect * MICRO, nTimePostConnect * MILLI / nBlocksTotal);
     LogPrint(BCLog::BENCH, "- Connect block: %.2fms [%.2fs (%.2fms/blk)]\n", (nTime6 - nTime1) * MILLI, nTimeTotal * MICRO, nTimeTotal * MILLI / nBlocksTotal);
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    ConnectTipMs.Set(diff.total_milliseconds());
 
     connectTrace.BlockConnected(pindexNew, std::move(pthisBlock));
     return true;
@@ -2846,6 +2913,7 @@ static void LimitValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main) {
 }
 
 bool CChainState::ActivateBestChain(BlockValidationState &state, const CChainParams& chainparams, std::shared_ptr<const CBlock> pblock) {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     // Note that while we're often called here from ProcessNewBlock, this is
     // far from a guarantee. Things in the P2P/RPC will often end up calling
     // us in the middle of ProcessNewBlock - do not assume pblock is set
@@ -2934,6 +3002,11 @@ bool CChainState::ActivateBestChain(BlockValidationState &state, const CChainPar
         if (ShutdownRequested()) break;
     } while (pindexNewTip != pindexMostWork);
     CheckBlockIndex(chainparams.GetConsensus());
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    ActivateBestChainMs.Set(diff.total_milliseconds());
 
     // Write changes periodically to disk, after relay.
     if (!FlushStateToDisk(chainparams, state, FlushStateMode::PERIODIC)) {
@@ -3314,6 +3387,7 @@ static bool CheckBlockHeader(const CBlockHeader& block, BlockValidationState& st
 
 bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     // These are checks that are independent of context.
 
     if (block.fChecked)
@@ -3382,6 +3456,17 @@ bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensu
 
     if (fCheckPOW && fCheckMerkleRoot)
         block.fChecked = true;
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    CheckBlockUs.Set(diff.total_microseconds());
+    BlockVersion.Set(block.nVersion);
+    BlockNumTransactions.Set(block.vtx.size());
+    BlockSigOps.Set(nSigOps);
+    BlockSizeBytes.Set(::GetSerializeSize(block, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS));
+    BlockSizeWitnessBytes.Set(::GetSerializeSize(block, PROTOCOL_VERSION));
+    BlockWeight.Set(::GetBlockWeight(block));
 
     return true;
 }
@@ -3725,6 +3810,7 @@ static FlatFilePos SaveBlockToDisk(const CBlock& block, int nHeight, CChain& act
 /** Store block on disk. If dbp is non-nullptr, the file is known to already reside on disk */
 bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, const CChainParams& chainparams, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     const CBlock& block = *pblock;
 
     if (fNewBlock) *fNewBlock = false;
@@ -3802,6 +3888,11 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, Block
     FlushStateToDisk(chainparams, state, FlushStateMode::NONE);
 
     CheckBlockIndex(chainparams.GetConsensus());
+
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    ActivateBlockMs.Set(diff.total_microseconds());
 
     return true;
 }

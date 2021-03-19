@@ -38,6 +38,7 @@
 
 #include <memory>
 #include <stdint.h>
+#include <prometheus.h> // promserver
 
 /**
  * Return average network hashes per second based on the last 'lookup' blocks,
@@ -430,6 +431,9 @@ static RPCHelpMan getmininginfo()
     obj.pushKV("pooledtx",         (uint64_t)mempool.size());
     obj.pushKV("chain",            Params().NetworkIDString());
     obj.pushKV("warnings",         GetWarnings(false).original);
+    // promserver
+    NetworkExahashesPerSecond.Set(getnetworkhashps().HandleRequest(request).get_real() / 1e18);
+    NetworkDifficulty.Set((double)GetDifficulty(::ChainActive().Tip()));
     return obj;
 },
     };

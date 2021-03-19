@@ -190,6 +190,7 @@ BITCOIN_CORE_H = \
   policy/settings.h \
   pow.h \
   protocol.h \
+  prometheus.h \
   psbt.h \
   random.h \
   randomenv.h \
@@ -337,6 +338,7 @@ libbitcoin_server_a_SOURCES = \
   policy/rbf.cpp \
   policy/settings.cpp \
   pow.cpp \
+  prometheus.cpp \
   rest.cpp \
   rpc/blockchain.cpp \
   rpc/mining.cpp \

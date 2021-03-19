@@ -1,0 +1,52 @@
+name: bitcoin-prometheus
+env:
+  DOCKERHUB_IMAGE: wileyj/bitcoin
+  DOCKERFILE: docker/Dockerfile
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to create (optional)'
+        required: false
+
+jobs:
+  buildx:
+    name: Bitcoin Core Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build: ["-prometheus"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Set Vars
+        run: |
+          echo "MAJOR=$(grep "define(_CLIENT_VERSION_MAJOR" configure.ac | awk '{print $2}' | tr -d \))" >> $GITHUB_ENV
+          echo "MINOR=$(grep "define(_CLIENT_VERSION_MINOR" configure.ac | awk '{print $2}' | tr -d \))" >> $GITHUB_ENV
+          echo "BUILD=$(grep "define(_CLIENT_VERSION_BUILD" configure.ac | awk '{print $2}' | tr -d \))" >> $GITHUB_ENV
+          echo "RC=$(grep "define(_CLIENT_VERSION_RC" configure.ac  | awk '{print $2}' | tr -d \))" >> $GITHUB_ENV
+
+      # - name: Echo BTC Version
+      #   run: |
+      #     echo ${{env.MAJOR}}.${{env.MINOR}}.${{env.BUILD}}.${{env.RC}}
+
+      - name: Login to Dockerhub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Build and Push ${{env.MAJOR}}.${{env.MINOR}}.${{env.BUILD}}.${{env.RC}}
+        uses: docker/build-push-action@v2
+        with:
+          file: ${{ env.DOCKERFILE }}
+          build-args: |
+            BTC_VERSION=${{ env.BTC_VERSION }}
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{env.MAJOR}}.${{env.MINOR}}.${{env.BUILD}}.${{env.RC}}${{ matrix.build }}

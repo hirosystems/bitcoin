@@ -10,7 +10,8 @@ src/bitcoin-node
 src/bitcoin-tx
 src/bitcoin-util
 src/bitcoin-wallet
-src/test/fuzz/fuzz
+src/test/fuzz/*
+!src/test/fuzz/*.*
 src/test/test_bitcoin
 src/qt/test/test_bitcoin-qt
 
@@ -149,3 +150,12 @@ db4/
 osx_volname
 dist/
 *.background.tiff
+
+build.sh
+statsClient.txt
+statsd.txt
+test.sh
+run
+nohup.out
+metrics_output.txt
+*.save

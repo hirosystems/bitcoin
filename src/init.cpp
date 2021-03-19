@@ -21,6 +21,7 @@
 #include <hash.h>
 #include <httprpc.h>
 #include <httpserver.h>
+#include <prometheus.h> // promserver
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
 #include <interfaces/chain.h>
@@ -579,6 +580,9 @@ void SetupServerArgs(NodeContext& node)
     argsman.AddArg("-rpcwhitelistdefault", "Sets default behavior for rpc whitelisting. Unless rpcwhitelistdefault is set to 0, if any -rpcwhitelist is set, the rpc server acts as if all rpc users are subject to empty-unless-otherwise-specified whitelists. If rpcwhitelistdefault is set to 1 and no -rpcwhitelist is set, rpc server acts as if all rpc users are subject to empty whitelists.", ArgsManager::ALLOW_BOOL, OptionsCategory::RPC);
     argsman.AddArg("-rpcworkqueue=<n>", strprintf("Set the depth of the work queue to service RPC calls (default: %d)", DEFAULT_HTTP_WORKQUEUE), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::RPC);
     argsman.AddArg("-server", "Accept command line and JSON-RPC commands", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    // promserver
+    argsman.AddArg("-promserver", "Start Prometheus server on port 9153 (default: 1)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-promserverbind=<ip>[:port]", strprintf("Bind to given address to listen for Prometheus connections. Do not expose the Prometheus server to untrusted networks such as the public internet! (default: %u)", DEFAULT_PROMSERVER_BIND), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 
 #if HAVE_DECL_FORK
     argsman.AddArg("-daemon", strprintf("Run in the background as a daemon and accept commands (default: %d)", DEFAULT_DAEMON), ArgsManager::ALLOW_BOOL, OptionsCategory::OPTIONS);
@@ -824,6 +828,15 @@ void InitParameterInteraction(ArgsManager& args)
         if (args.SoftSetBoolArg("-listen", false))
             LogPrintf("%s: parameter interaction: -connect set -> setting -listen=0\n", __func__);
     }
+
+    // promserver
+    if (args.IsArgSet("-promserver")) {
+        if (args.SoftSetBoolArg("-promserver", false))
+            LogPrintf("%s: parameter interaction: -promserver set -> setting -promserver=0\n", __func__);
+        if (args.IsArgSet("-promserverbind"))
+            LogPrintf("%s: parameter interaction: -promserver set -> setting -promserverbind\n", __func__);
+    }
+
 
     if (args.IsArgSet("-proxy")) {
         // to protect privacy, do not listen by default if a default proxy server is specified

@@ -45,6 +45,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <prometheus.h> // promserver
 
 struct CUpdatedBlock
 {
@@ -1089,6 +1090,12 @@ static RPCHelpMan gettxoutsetinfo()
         }
         ret.pushKV("disk_size", stats.nDiskSize);
         ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
+        // promserver
+        UtxosetTx.Set(stats.nTransactions);
+        UtxosetTxOutputs.Set(stats.nTransactionOutputs);
+        UtxosetDbSizeBytes.Set(stats.nDiskSize);
+        UtxosetBlockHeight.Set(stats.nHeight);
+        UtxosetTotalBTCAmount.Set((double)stats.nTotalAmount / (double)COIN);
     } else {
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to read UTXO set");
     }
@@ -1722,7 +1729,11 @@ static RPCHelpMan getchaintxstats()
         ret.pushKV("window_interval", nTimeDiff);
         if (nTimeDiff > 0) {
             ret.pushKV("txrate", ((double)nTxDiff) / nTimeDiff);
+            // promserver
+            TransactionsTxRate.Set(nTxDiff/nTimeDiff);
         }
+        // promserver
+        TransactionsTotalCount.Set((int64_t)pindex->nChainTx);
     }
 
     return ret;

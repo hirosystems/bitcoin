@@ -6,9 +6,12 @@
 
 #include <primitives/transaction.h>
 #include <consensus/validation.h>
+#include <boost/thread.hpp>
+#include <prometheus.h> // promserver
 
 bool CheckTransaction(const CTransaction& tx, TxValidationState& state)
 {
+    boost::posix_time::ptime start = boost::posix_time::microsec_clock::local_time();
     // Basic checks that don't depend on any context
     if (tx.vin.empty())
         return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-vin-empty");
@@ -53,6 +56,10 @@ bool CheckTransaction(const CTransaction& tx, TxValidationState& state)
             if (txin.prevout.IsNull())
                 return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-prevout-null");
     }
+    // promserver
+    boost::posix_time::ptime finish = boost::posix_time::microsec_clock::local_time();
+    boost::posix_time::time_duration diff = finish - start;
+    CheckTransactionUs.Set(diff.total_microseconds());
 
     return true;
 }
