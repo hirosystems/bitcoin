@@ -134,7 +134,7 @@ inline auto& bandwidth_bytes_received = prometheus::BuildGauge()
     .Help("Bandwidth Received in bytes")
     .Register(*registry);
 inline auto& bandwidth_bytes_sent = prometheus::BuildGauge()
-    .Name("btc_badwidth_bytes_sent")
+    .Name("btc_bandwidth_bytes_sent")
     .Help("Bandwidth Received in bytes")
     .Register(*registry);
 inline auto& block_height = prometheus::BuildGauge()
