@@ -1,4 +1,4 @@
-name: CI
+name: Release
 
 on:
   workflow_dispatch:
@@ -144,19 +144,48 @@ jobs:
           path: ${{ runner.temp }}/bitcoin-${{ inputs.tag }}-${{ matrix.host-platform-triplet }}.tar.gz
           name: bitcoin-${{ inputs.tag }}-${{ matrix.host-platform-triplet }}.tar.gz
 
-  build-image:
-    name: Build Image
+  create-release:
+    if: inputs.tag != ''
+    name: Create Release
     runs-on: ubuntu-latest
     needs:
       - build-dist
     steps:
-      - name: Checkout
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-
-      - name: Download Bitcoin dist 
+      ## Downloads the artifacts built in `create-source-binary.yml`
+      - name: Download Artifacts
         uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
-          name: artifact
+          path: release
+
+      ## Generate a checksums file to be added to the release page
+      - name: Generate Checksums
+        uses: stacks-network/actions/generate-checksum@main
+
+      ## Upload the release archives with the checksums file
+      - name: Upload Release
+        uses: softprops/action-gh-release@a74c6b72af54cfa997e81df42d94703d6313a2d0 #v2.0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        with:
+          name: Release ${{ github.event.inputs.tag || github.ref }}
+          tag_name: ${{ github.event.inputs.tag || github.ref }}
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: true
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            release/*.tar.gz
+            CHECKSUMS.txt
+
+  build-image:
+    name: Build Image
+    runs-on: ubuntu-latest
+    needs:
+      - create-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Docker metadata
         id: meta
@@ -191,4 +220,4 @@ jobs:
           build-args: |
             TAG=${{ inputs.tag }}
             REPO=${{ github.repository }}
-            IS_RELEASE=false
+            IS_RELEASE=true
