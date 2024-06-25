@@ -1,0 +1,227 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (ex: v25.2)"
+        default: v25.2
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-dist:
+    if: inputs.tag != ''
+    name: Build Bitcoin Dist
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            host-platform-triplet: x86_64-pc-linux-gnu
+            build-os: linux
+            build-arch: amd64
+          - os: ubuntu-latest
+            host-platform-triplet: aarch64-linux-gnu
+            build-os: linux
+            build-arch: arm64
+          - os: macos-latest
+            host-platform-triplet: arm64-apple-darwin
+            build-os: apple
+            build-arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Bitcoin repo
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: bitcoin/bitcoin
+          ref: ${{ inputs.tag }}
+
+      - name: Patch regtest halving schedule
+        run: |
+          sed -i.bu 's/nSubsidyHalvingInterval = 150;/nSubsidyHalvingInterval = 210000;/g' src/kernel/chainparams.cpp
+          rm -f src/kernel/chainparams.cpp.bu
+          grep "nSubsidyHalvingInterval" src/kernel/chainparams.cpp
+
+      - name: Setup Xcode
+        if: matrix.os == 'macos-latest'
+        uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd # v1.6
+        with:
+          xcode-version: '14.3.1'
+
+      - name: Install Homebrew packages
+        if: matrix.os == 'macos-latest'
+        env:
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+        run: |
+          # A workaround for "The `brew link` step did not complete successfully" error.
+          brew install \
+            automake \
+            boost \
+            ccache \
+            gnu-getopt \
+            libevent \
+            libtool \
+            pkg-config
+
+      - name: Install Build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            autoconf \
+            automake \
+            autotools-dev \
+            bsdmainutils \
+            build-essential \
+            ccache \
+            clang \
+            curl \
+            libboost-dev \
+            libevent-dev \
+            libsqlite3-dev \
+            libtool \
+            pkg-config \
+            python3
+
+      - name: Install Build dependencies
+        if: matrix.host-platform-triplet == 'aarch64-linux-gnu'
+        run: |
+          sudo apt-get install -y \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+
+      - name: Set Ccache directory
+        run: |
+          echo "CCACHE_DIR=${RUNNER_TEMP}/ccache_dir" >> "$GITHUB_ENV"
+
+      - name: Restore Ccache cache
+        id: ccache-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ github.job }}-ccache-${{ github.run_id }}
+          restore-keys: ${{ github.job }}-ccache-
+
+      - name: Build BerkelyDB
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          make -C depends HOST=${{ matrix.host-platform-triplet }} NO_BOOST=1 NO_QT=1 NO_SQLITE=1 NO_NATPMP=1 NO_UPNP=1 NO_ZMQ=1 NO_USDT=1
+          echo "BDB_PREFIX=$(ls -d $(pwd)/depends/${{ matrix.host-platform-triplet }})" >> "$GITHUB_ENV"
+
+      - name: Run Autogen
+        run: |
+          ./autogen.sh
+
+      - name: Configure
+        run: |
+          # Skip debugging info during compilation
+          export CXXFLAGS="-g0 -O2"
+
+          # Set unique opts depending on OS
+          EXTRA_OPTS=()
+          if [ "${{ matrix.os }}" == 'ubuntu-latest' ]; then
+            EXTRA_OPTS+=(CONFIG_SITE=$(pwd)/depends/${{ matrix.host-platform-triplet }}/share/config.site)
+            EXTRA_OPTS+=("BDB_LIBS=\"-L${BDB_PREFIX}/lib -ldb_cxx-4.8\"")
+            EXTRA_OPTS+=("BDB_CFLAGS=\"-I${BDB_PREFIX}/include\"")
+          fi
+
+          echo "EXTRA_OPTS is ${EXTRA_OPTS[@]}"
+
+          # Configure with legacy BerkelyDB and use clang to save memory during compilation
+          # Reference: https://github.com/bitcoin/bitcoin/blob/v25.2/doc/build-unix.md
+          ./configure \
+            "${EXTRA_OPTS[@]}" \
+            --with-gui=no \
+            --includedir=${RUNNER_TEMP}/bitcoin/include \
+            --bindir=${RUNNER_TEMP}/bitcoin/bin \
+            --mandir=${RUNNER_TEMP}/bitcoin/share/man/man1 \
+            --disable-gui-tests \
+            --disable-tests
+
+      - name: Build
+        run: |
+          make -j"$(($(nproc 2>/dev/null || sysctl -n hw.logicalcpu)+1))"
+          sudo make install
+
+      - name: Compress artifact
+        run: |
+          tar -czvf ${RUNNER_TEMP}/bitcoin-${{ inputs.tag }}-${{ matrix.build-os }}-${{ matrix.build-arch }}.tar.gz -C ${RUNNER_TEMP} bitcoin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          path: ${{ runner.temp }}/bitcoin-${{ inputs.tag }}-${{ matrix.build-os }}-${{ matrix.build-arch }}.tar.gz
+          name: bitcoin-${{ inputs.tag }}-${{ matrix.build-os }}-${{ matrix.build-arch }}.tar.gz
+
+  create-release:
+    if: inputs.tag != ''
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-dist
+    steps:
+      ## Generate a checksums file to be added to the release page
+      - name: Download Artifacts and Generate Checksums
+        uses: stacks-network/actions/generate-checksum@main
+
+      ## Upload the release archives with the checksums file
+      - name: Upload Release
+        uses: softprops/action-gh-release@a74c6b72af54cfa997e81df42d94703d6313a2d0 #v2.0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        with:
+          name: Release ${{ github.event.inputs.tag || github.ref }}
+          tag_name: ${{ github.event.inputs.tag || github.ref }}
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: true
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            release/*.tar.gz
+            CHECKSUMS.txt
+
+  build-image:
+    name: Build Image
+    runs-on: ubuntu-latest
+    needs:
+      - create-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
+        with:
+          images: |
+            hirosystems/${{ github.event.repository.name }}
+          tags: |
+            type=raw,value=${{ inputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
+
+      - name: Login into Docker Hub
+        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            TAG=${{ inputs.tag }}
+            REPO=${{ github.repository }}
+            IS_RELEASE=true
